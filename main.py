@@ -160,23 +160,36 @@ def main_worker(args):
 
     writer = SummaryWriter(logs_dir)
 
+    # Global variables
+    ###########################################################################################
+    NEW_IMAGE_SIZE = 16
+    RATIO__TRAINING_DATA_TO_KEEP = 0.2
+
     # Data loading code
     ###########################################################################################
     traindir = os.path.join(args.data, 'train')
-    valdir = os.path.join(args.data, 'val')
+    valdir   = os.path.join(args.data, 'val')
+
+    
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
     train_dataset = datasets.ImageFolder(traindir, transforms.Compose([
         transforms.RandomResizedCrop(224),
         transforms.RandomHorizontalFlip(),
+        transforms.Resize((NEW_IMAGE_SIZE, NEW_IMAGE_SIZE)),
         transforms.ToTensor(),
         normalize,
     ]))
 
+
+    train_dataset = torch.utils.data.Subset(train_dataset, range(int(RATIO__TRAINING_DATA_TO_KEEP*len(train_dataset))))
+    print(" => size of the reduced training set :", len(train_dataset))
+
     val_dataset = datasets.ImageFolder(valdir, transforms.Compose([
         transforms.Resize(256),
         transforms.CenterCrop(224),
+        transforms.Resize((NEW_IMAGE_SIZE, NEW_IMAGE_SIZE)),
         transforms.ToTensor(),
         normalize,
     ]))
@@ -202,8 +215,8 @@ def main_worker(args):
                         summaryfile)
         print_and_write('Selected {} classes names:  {}'.format(args.nb_classes, selected_classes_names), logfile,
                         summaryfile)
-        if args.random_seed is not None:
-            print_and_write('Random seed used {}'.format(args.random_seed), logfile, summaryfile)
+        if args.seed is not None:
+            print_and_write('Random seed used {}'.format(args.seed), logfile, summaryfile)
 
         train_dataset = torch.utils.data.Subset(train_dataset, train_indices_full)
         val_dataset = torch.utils.data.Subset(val_dataset, val_indices_full)
@@ -219,7 +232,8 @@ def main_worker(args):
     ###########################################################################################
     if args.arch in model_names:
 
-        n_space = 224
+        ##n_space = 224
+        n_space = NEW_IMAGE_SIZE
         nb_channels_in = 3
 
         # create scattering
@@ -230,10 +244,14 @@ def main_worker(args):
 
         if args.scattering_wph:
             A = args.scattering_nphases
-            scattering = ScatteringTorch2D_wph(J=J, shape=(224, 224), L=L_ang, A=A, max_order=max_order,
-                                               backend=args.backend)
+            #scattering = ScatteringTorch2D_wph(J=J, shape=(224, 224), L=L_ang, A=A, max_order=max_order,
+            #                                   backend=args.backend)
+            scattering = ScatteringTorch2D_wph(J=J, shape=(NEW_IMAGE_SIZE, NEW_IMAGE_SIZE), L=L_ang, A=A, max_order=max_order,
+                                               backend=args.backend)                                    
         else:
-            scattering = Scattering2D(J=J, shape=(224, 224), L=L_ang, max_order=max_order,
+            #scattering = Scattering2D(J=J, shape=(224, 224), L=L_ang, max_order=max_order,
+            #                          backend=args.backend)
+            scattering = Scattering2D(J=J, shape=(NEW_IMAGE_SIZE, NEW_IMAGE_SIZE), L=L_ang, max_order=max_order,
                                       backend=args.backend)
         # Flatten scattering
         scattering = nn.Sequential(scattering, nn.Flatten(1, 2))
@@ -539,6 +557,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args, logfile, write
         input = input.cuda(non_blocking=True)
         target = target.cuda(non_blocking=True)
 
+
+
         # compute output
         if args.arch in ['sparsescatnet', 'sparsescatnetw']:
             output, lambda_0_max_batch, sparsity, support_size, support_diff, rec_loss_rel = model(input)
@@ -550,8 +570,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args, logfile, write
         # measure accuracy and record loss
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
         losses.update(loss.item(), input.size(0))
-        top1.update(acc1[0], input.size(0))
-        top5.update(acc5[0], input.size(0))
+        top1.update(acc1[0].item(), input.size(0))
+        top5.update(acc5[0].item(), input.size(0))
 
         # Record useful indicators for ISTC
         if args.arch in ['sparsescatnet', 'sparsescatnetw']:
@@ -678,8 +698,8 @@ def validate(val_loader, model, criterion, epoch, args, logfile, summaryfile, wr
             # measure accuracy and record loss
             acc1, acc5 = accuracy(output, target, topk=(1, 5))
             losses.update(loss.item(), input.size(0))
-            top1.update(acc1[0], input.size(0))
-            top5.update(acc5[0], input.size(0))
+            top1.update(acc1[0].item(), input.size(0))
+            top5.update(acc5[0].item(), input.size(0))
 
             # Record useful indicators for ISTC
             if args.arch in ['sparsescatnet', 'sparsescatnetw']:
@@ -778,9 +798,10 @@ def validate(val_loader, model, criterion, epoch, args, logfile, summaryfile, wr
 
         print_and_write("Max coherence {:.3f}, median coherence {:.3f}".
                         format(np.max(gram), np.median(gram)), logfile)
+    
 
     if (epoch % args.learning_rate_adjust_frequency) == (args.learning_rate_adjust_frequency-1):
-        print_and_write('Validation Epoch {} before learning rate adjustment n° {}, * Acc@1 {:.2f} Acc@5 {:.2f}'
+        print_and_write('Validation Epoch {} before learning rate adjustment n {}, * Acc@1 {:.2f} Acc@5 {:.2f}'
                         .format(epoch, epoch // args.learning_rate_adjust_frequency+1, top1.avg, top5.avg), summaryfile)
         if args.arch in ['sparsescatnet', 'sparsescatnetw']:
             print_and_write('Rec loss rel {:.2f}\t Sparsity {}\t Support size {}\t Support diff {}'.
@@ -820,7 +841,7 @@ def save_checkpoint(state, is_best, checkpoint_filename='checkpoint.pth.tar',
     if is_best:
         shutil.copyfile(checkpoint_filename, best_checkpoint_filename)
 
-
+        
 class AverageMeter(object):
     """Computes and stores the average and current value"""
     def __init__(self, name, fmt=':f'):
@@ -843,6 +864,7 @@ class AverageMeter(object):
     def __str__(self):
         fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
         return fmtstr.format(**self.__dict__)
+
 
 
 class ProgressMeter(object):
@@ -900,7 +922,7 @@ def accuracy(output, target, topk=(1,)):
 
         res = []
         for k in topk:
-            correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
+            correct_k = correct[:k].contiguous().view(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
 

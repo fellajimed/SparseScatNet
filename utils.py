@@ -2,6 +2,13 @@ import torch
 import torch.nn as nn
 
 
+use_gpu = torch.cuda.is_available()
+if use_gpu:
+    device = torch.device('cuda')
+else:
+    device = torch.device('cpu')
+
+
 def print_and_write(log, *logfiles):
     print(log)
     for logfile in logfiles:
@@ -28,14 +35,17 @@ def compute_stding_matrix(data_loader, transformation, logfile, print_freq=100):
     # Compute a convolutional standardization after a transform
 
     # Put transform on GPU
-    transformation = torch.nn.DataParallel(transformation).cuda()
+    # transformation = torch.nn.DataParallel(transformation).cuda()
+    transformation = torch.nn.DataParallel(transformation)
+    transformation = transformation.to(device)
 
     with torch.no_grad():
         print_and_write('Computing mean and standardization matrix...', logfile)
         print_and_write('Starting by computing mean and std dev...', logfile)
         mean_var_meter = AverageVarMeter()
         for i, (input, _) in enumerate(data_loader):
-            input = input.cuda()
+            # input = input.cuda()
+            input = input.to(device)
             if transformation is not None:
                 input = transformation(input)
             if len(input.size()) == 5:
