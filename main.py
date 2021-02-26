@@ -66,6 +66,10 @@ parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training. ')
+parser.add_argument('--ratio-dataset', default=1., type=float,
+                    help='ratio of the dataset to use on training if you want only a subset of the data')
+parser.add_argument('--resize-images', default=224, type=int,
+                    help='The by defaut size of ImageNet is 224*224, you can here specify another value .. example : 32')
 
 # Additional training args
 parser.add_argument('--learning-rate-adjust-frequency', default=30, type=int,
@@ -163,7 +167,9 @@ def main_worker(args):
     # Global variables
     ###########################################################################################
     NEW_IMAGE_SIZE = 16
-    RATIO__TRAINING_DATA_TO_KEEP = 0.2
+    RATIO__TRAINING_DATA_TO_KEEP = 1
+    #RATIO__TRAINING_DATA_TO_KEEP = min(1, args.ratio_dataset)
+    #NEW_IMAGE_SIZE = args.resize_images
 
     # Data loading code
     ###########################################################################################
@@ -184,7 +190,8 @@ def main_worker(args):
 
 
     train_dataset = torch.utils.data.Subset(train_dataset, range(int(RATIO__TRAINING_DATA_TO_KEEP*len(train_dataset))))
-    print(" => size of the reduced training set :", len(train_dataset))
+    if RATIO__TRAINING_DATA_TO_KEEP < 1 : 
+        print("=> size of the reduced training set :", len(train_dataset))
 
     val_dataset = datasets.ImageFolder(valdir, transforms.Compose([
         transforms.Resize(256),
@@ -224,8 +231,8 @@ def main_worker(args):
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
                                                num_workers=args.workers, pin_memory=True)
 
-    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
-                                             num_workers=args.workers, pin_memory=True)
+    val_loader   = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
+                                               num_workers=args.workers, pin_memory=True)
     ###########################################################################################
 
     # Model creation
@@ -244,13 +251,9 @@ def main_worker(args):
 
         if args.scattering_wph:
             A = args.scattering_nphases
-            #scattering = ScatteringTorch2D_wph(J=J, shape=(224, 224), L=L_ang, A=A, max_order=max_order,
-            #                                   backend=args.backend)
             scattering = ScatteringTorch2D_wph(J=J, shape=(NEW_IMAGE_SIZE, NEW_IMAGE_SIZE), L=L_ang, A=A, max_order=max_order,
                                                backend=args.backend)                                    
         else:
-            #scattering = Scattering2D(J=J, shape=(224, 224), L=L_ang, max_order=max_order,
-            #                          backend=args.backend)
             scattering = Scattering2D(J=J, shape=(NEW_IMAGE_SIZE, NEW_IMAGE_SIZE), L=L_ang, max_order=max_order,
                                       backend=args.backend)
         # Flatten scattering
@@ -275,6 +278,7 @@ def main_worker(args):
             args.scattering_J, 2 if args.scattering_order2 else 1, args.scattering_wph,
             args.scattering_nphases if args.scattering_wph else 0, args.nb_classes)
 
+        # compute the mean and the std of the data
         if os.path.isfile(std_file):
             print_and_write("=> loading scattering mean and std '{}'".format(std_file), logfile)
             std_dict = torch.load(std_file)
@@ -360,7 +364,6 @@ def main_worker(args):
 
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda()
-
     optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
     # optionally resume from a checkpoint
@@ -557,8 +560,6 @@ def train(train_loader, model, criterion, optimizer, epoch, args, logfile, write
         input = input.cuda(non_blocking=True)
         target = target.cuda(non_blocking=True)
 
-
-
         # compute output
         if args.arch in ['sparsescatnet', 'sparsescatnetw']:
             output, lambda_0_max_batch, sparsity, support_size, support_diff, rec_loss_rel = model(input)
@@ -655,6 +656,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args, logfile, write
     if writer is not None:
         writer.add_scalar('top5_train', top5.avg, global_step=epoch)
         writer.add_scalar('top1_train', top1.avg, global_step=epoch)
+        writer.add_scalar('loss_train', losses.avg, global_step=epoch)
 
 
 def validate(val_loader, model, criterion, epoch, args, logfile, summaryfile, writer):
@@ -831,12 +833,14 @@ def validate(val_loader, model, criterion, epoch, args, logfile, summaryfile, wr
     if writer is not None:
         writer.add_scalar('top5_val', top5.avg, global_step=epoch)
         writer.add_scalar('top1_val', top1.avg, global_step=epoch)
+        writer.add_scalar('loss_val', losses.avg, global_step=epoch)
 
     return top1.avg, top5.avg
 
 
 def save_checkpoint(state, is_best, checkpoint_filename='checkpoint.pth.tar',
                     best_checkpoint_filename='model_best.pth.tar'):
+    print(" >> Saving a better model")
     torch.save(state, checkpoint_filename)
     if is_best:
         shutil.copyfile(checkpoint_filename, best_checkpoint_filename)
